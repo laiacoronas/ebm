@@ -1,0 +1,475 @@
+---
+title: "Preprocessing Techniques"
+author: "Artificial Intelligence"
+date: '2022-02'
+output:
+  word_document: default
+  pdf_document:
+    fig_height: 4
+    fig_width: 6
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ Objective
+===========
+
+ Apply basic pre-processing techniques to overcome traditional shortcomings
+ of real data. Show the benefits of the techniques on two public datasets:
+
+ - Prostate2000Raw (mass spectrometry data from the `ChemometricsWithR` package).
+ - lcms (a liquid chromatography-mass spectrometry dataset from `ptw`)
+
+
+ Preparation:
+===============
+ Check if the following packages are available in your RStudio session. You can
+ view the list of installed packages with the command: `View(installed.packages())`.
+
+ - `ChemometricsWithR`
+ - `ptw`
+ - `signal`
+ 
+ If all the packages are installed, go to the **Task 1**, otherwise keep reading.
+
+ The `ptw` and `signal` packages are available in the
+ Comprehensive R Archive Network (CRAN), so you can install them using the
+ `Install` button in the "Packages" tab. Alternatively, you can use:
+```{r eval=FALSE, include=TRUE}
+install.packages(c("ptw", "signal", "baseline"))
+```
+To install the ChemometricsWithR package please folow the next instructions:
+
+
+```{r eval=FALSE, include=TRUE}
+install.packages("remotes")
+library(remotes)
+install_github("rwehrens/ChemometricsWithR")
+
+```
+
+ Now all the packages should be installed.
+
+ Task 1: Peak detection
+==========================
+
+ This task uses the prostate dataset from the previous session
+
+
+```{r}
+library("ChemometricsWithR")
+```
+
+ Load the data, give proper row and column names, and average replicates:
+ 
+```{r}
+data("Prostate2000Raw", package="ChemometricsWithR")
+mz_prost <- Prostate2000Raw$mz
+intensity_with_replicates <- Prostate2000Raw$intensity
+medical_cond <- Prostate2000Raw$type
+number_of_subjects <- ncol(intensity_with_replicates)/2
+subject_ids <- paste0("S", rep(1:number_of_subjects, each = 2)) # 1 1 2 2 3 3 4 4 ... 327 327
+replicate_ids <- rep(c("A", "B"), times = number_of_subjects) # A B A B A B ... A B
+
+new_names <- paste0(subject_ids,
+                    "_",
+                    medical_cond, # control control ... bph, bph, pca, pca
+                    "_",
+                    replicate_ids)
+colnames(intensity_with_replicates) <- new_names
+rownames(intensity_with_replicates) <- as.character(round(mz_prost, digits = 1))
+
+intensity <- matrix(0, nrow = nrow(intensity_with_replicates), ncol = number_of_subjects)
+for (i in seq(1, number_of_subjects)) {
+  intensity[, i] <- rowMeans(intensity_with_replicates[, c(2*i - 1, 2*i)])
+}
+
+rownames(intensity) <- rownames(intensity_with_replicates)
+# The medical condition is always the same for both replicates, so we just take one:
+medical_cond_subj <- medical_cond[seq(from = 1, to = 654, by = 2)]
+colnames(intensity) <- paste0("S", 1:number_of_subjects,
+                              "_",
+                              medical_cond_subj)
+
+# View(intensity[1:10, 1:10])
+```
+
+ If peaks are known to have a specific shape (e.g. in NMR peaks are known to
+ have a Lorentzian shape), this knowledge can be used to fit peaks to the
+ data. However in some cases, peaks shape depart strongly from the expected
+ theoretical shape due to experimental factors. In those cases, usually we
+ prefer to use peak detection algorithms without any assumption about the
+ peak shape.
+
+ Peak detection algorithmics is always an open problem; the
+ detection of real peaks close to the noise level with a minimum number of
+ false alarms remains challenging. An easy approach to peak
+ detection is just the location of local maxima in certain sections. For
+ this we will use the `pick.peaks` function from the `ChemometricsWithR` package
+
+ We will consider in this exercise just a small region of the spectra corresponding
+ to subject 1:
+
+```{r}
+mz_region <- mz_prost[501:1500]
+intensity_region <- intensity[501:1500, 1]
+
+plot(x = mz_region, y = intensity_region, type = "l",
+     xlab = "m/z (Da)", ylab = "Intensity (a.u.)")
+```
+
+ The parameter `span` controls the size of the region where the peaks are
+ located. The longer the `span`, fewer peaks are located. We compare now
+ the peak detection results for two different spans. on a region of the
+ intensity spectra.
+
+```{r}
+win_size_avg_filter <- 11
+filtered_intensity_region <- stats::filter(x = intensity_region,
+                                           filter = rep(1/win_size_avg_filter, win_size_avg_filter))
+
+# Then we use the `pick.peaks` function with `span=10`:
+span <- 10
+pks10 <- ChemometricsWithR::pick.peaks(filtered_intensity_region, span = span)
+plot(x = mz_region, y = intensity_region,
+     type = "l", col = "black",
+     xlab = "m/z (Da)", ylab = "Intensity (a.u.)")
+lines(x = mz_region, y = filtered_intensity_region, col = "blue")
+abline(v = mz_region[pks10], col = "red")
+message("With a span=", span, " we detect ", length(pks10), " peaks")
+
+# And we try with `span = 40`:
+span <- 40
+pks40 <- pick.peaks(filtered_intensity_region, span = span)
+plot(x = mz_region, y = intensity_region,
+     type = "l", col = "black",
+     xlab = "m/z (Da)", ylab = "Intensity (a.u.)")
+lines(x = mz_region, y = filtered_intensity_region, col = "blue")
+abline(v = mz_region[pks40], col = "red")
+message("With a span=", span, " we detect ", length(pks40), " peaks")
+```
+
+ We now explore the number of peaks detected vs the value of the `span`:
+
+```{r}
+span_values <- 5:100
+number_of_peaks <- numeric(length(span_values))
+for (i in 1:length(span_values)) {
+  span <- span_values[i]
+  pks_i <- pick.peaks(filtered_intensity_region, span = span)
+  number_of_peaks[i] <- length(pks_i)
+}
+plot(x = span_values, y = number_of_peaks, type = "l",
+     xlab = "Span values", ylab = "Number of peaks")
+```
+
+ - How does the number of peaks detected change depending on the `span`?
+ - What `span` value seems reasonable to you, given the previous question and
+   your tests?
+ - Why is it important to filter the spectra before the peak detection? What
+   happens if you do not filter?
+
+
+ Task 2: Normalization
+==============
+
+ In some occasions, the results of the analytical technique can be scaled due
+ to reasons that are not relevant for the analysis. A good example is the
+ analysis of urine. These samples will show appreciable differences in
+ concentrations due to the amount of liquid the individuals have been
+ consuming. The interesting point is not the absolute concentration, but the
+ pattern differences among patients and healthy individuals.
+
+ Without normalization the overall intensity may change from sample to sample in
+ an important factor. Those differences can pose problems to the posterior
+ data processing algorithms.
+
+ If there is
+    There are several ways to perform this
+ normalization. The most popular ones are:
+
+ - maximum to 1: Each spectrum is normalized so the maximum intensity is 1.
+ - unit area: The area below each spectrum is 1
+ - unit modulus: The modulus of each spectrum is 1
+
+ The following code exemplifies these diverse normalization strategies. In
+ some cases, there could be physical reasons to choose some of them, but
+ in some other cases, the normalization procedure has to be optimized by
+ the data analyst.
+
+  Report of maximum values and total areas for 10 spectra:
+
+```{r}
+report_of_max_area_modulus <- function(spectra) {
+  max_intensities <- apply(spectra, 2, max)
+  spectra_areas <- apply(spectra, 2, sum)
+  spectra_modulus <- apply(spectra, 2, function(x_i) sqrt(sum(x_i ^ 2)))
+
+  print("Maximum values:")
+  print("---------------")
+  print(max_intensities)
+  # These values are in the range
+  print("Range maximum values")
+  print(range(max_intensities))
+
+  print("Areas")
+  print("-----")
+  print(spectra_areas)
+  #' Those values are in the range:
+  print("Range total areas")
+  print(range(spectra_areas))
+
+  print("Total areas")
+  print("-----------")
+  print(spectra_modulus)
+  #' Those values are in the range:
+  print("Range modulus")
+  print(range(spectra_modulus))
+}
+
+report_of_max_area_modulus(spectra = intensity[,1:10])
+```
+
+  Normalize to the maximum:
+-----------------------------
+
+```{r}
+# Normalization factor
+max_values <- apply(intensity[,1:10], 2, max)
+
+# Normalization of each sample:
+intensity_norm_max <- intensity[,1:10]
+for (i in 1:10) {
+  intensity_norm_max[,i] <- intensity_norm_max[,i] / max_values[i]
+}
+
+report_of_max_area_modulus(spectra = intensity_norm_max)
+```
+
+
+ Normalize to unit area
+-----------------------------
+
+```{r}
+area_factor <- apply(intensity[,1:10], MARGIN = 2, sum)
+
+# Normalization of each sample:
+intensity_norm_area <- intensity[,1:10]
+for (i in 1:10) {
+  intensity_norm_area[,i] <- intensity_norm_area[,i] / area_factor[i]
+}
+
+report_of_max_area_modulus(spectra = intensity_norm_area)
+```
+
+
+ Normalize to modulus==1:
+--------------------------
+
+```{r}
+modulus_values <- apply(intensity[,1:10],
+                        MARGIN = 2,
+                        function(x) sqrt(sum(x ^ 2)))
+
+# Normalization of each sample:
+intensity_norm_modulus <- intensity[,1:10]
+for (i in 1:10) {
+  intensity_norm_modulus[,i] <- intensity_norm_modulus[,i] / modulus_values[i]
+}
+
+#report_of_max_area_modulus(spectra = intensity_norm_modulus)
+```
+
+ Represent a region of the spectra that we have normalized, before and
+ after normalization showing whether or not the variability between subjects
+ has been reduced.
+
+
+ Task 3: Spectral alignment
+================================
+
+ When chromatographic techniques are used for the analysis of biofluids,
+ the recorded spectra can suffer from retention time misalignments from
+ one sample to the next. These misalignments are caused by chromatographic
+ column degradation, temperature and pressure fluctuations among other factors.
+
+ When we use these chromatographic techniques to acquire proteomics or metabolomics
+ data, we need to correct those misalignments in order to be able to compare
+ the samples with each other.
+
+ In this section we will use the `lcms` dataset from the `ptw` to visualize
+ how an LC/MS sample looks like and to assess the misalignment issue. Then, we
+ will use the "Parametric Time Warping" technique to correct the misalignment.
+
+ The `lcms` dataset consists of a subset of three samples from a larger study.
+ The samples are a tryptic digest of E.coli proteins. As the whole set of
+ samples was too large, this dataset consists of a subset of three samples,
+ it only contains a subset of the retention time (from 2000 to 5500 seconds)
+ and a subset of the m/z range from 550 to 599.5 Da.
+
+ When we load the `lcms` dataset we will obtain three variables:
+
+ - `mz`: A vector of length 100 with the m/z axis.
+ - `time`: A vector of length 2000 with the retention time axis.
+ - `lcms`: A "cubic matrix" of dimesnions 100 x 2000 x 3, that contains the
+    intensities measured for each of the three samples, for each of the times
+    and each of the m/z values.
+
+```{r}
+library("ptw")
+data(lcms, package = "ptw")
+```
+
+ We can print a small subset of the intensities:
+
+```{r}
+print(lcms[1:5, 500:505, 1:2])
+```
+
+ It is easier to understand if we assign names to their dimensions according
+ to the documentation `?lcms`:
+
+```{r}
+rownames(lcms) <- mz
+colnames(lcms) <- round(time, digits = 1)
+dimnames(lcms)[[3]] <- c("Sample1", "Sample2", "Sample3")
+print(lcms[1:5, 500:505, 1:2])
+```
+
+ We can plot a topological view of a single sample, in log scale:
+
+```{r}
+intensity_sample_1 <- lcms[,,1]
+filled.contour(x = mz, y = time, z = log(intensity_sample_1),
+               xlab = "m/z (Da)", ylab = "Time (s)",
+               key.title = title("Intensity"),
+               main = "Countour plot of an LC-MS sample\nIntensities in log scale")
+```
+
+ We start plotting the chromatogram for m/z 550 in two of the samples of the LCMS data.
+
+```{r}
+intensity_sample_2 <- lcms[, , 2]
+intensity_s2_mz550 <- intensity_sample_2[1,]
+
+intensity_sample_3 <- lcms[, , 3]
+intensity_s3_mz550 <- intensity_sample_3[1,]
+
+
+plot(x = time/60, y = intensity_s2_mz550, type = "l",
+     col = "black",
+     xlab = "Ret. time (min)", ylab = "Intensity (a.u.)",
+     main = sprintf("m/z = %d Da", mz[1]))
+lines(x = time/60, y = intensity_s3_mz550, type = "l", col = "gray")
+legend("topright",legend = c("Sample 2", "Sample 3"),
+       lty = "solid", col = c("black", "gray"))
+```
+
+ Both chromatograms share certain peaks, although at different locations.
+ The peak displacement is not constant over the retention time axis.
+
+ To visualize an overall representation of the misalignments we can see the
+ Total Ion Chromatogram (TIC). The TIC consists of the sum of the intensities
+ along the m/z axis.
+
+```{r}
+tic_sample2 <- colSums(intensity_sample_2)
+tic_sample3 <- colSums(intensity_sample_3)
+plot(x = time/60, y = tic_sample2, type = "l",
+     xlim = c(60, 70), # you can try other x limits (e.g. c(80, 90))
+     col = "black", lty = "solid",
+     xlab = "Ret. time (min)",
+     ylab = "Intensity (a.u.)",
+     main = "Total Ion Chromatogram")
+lines(x = time/60, y = tic_sample3, col = "gray", lty = "solid")
+legend("topright",legend = c("Sample 2", "Sample 3"),
+       lty = "solid", col = c("black", "gray"))
+```
+
+ Both in each of the m/z traces and in the TIC we can see that there are
+ misalignments. The misalignments need to be corrected in order to be able to
+ match correctly the peak intensities from each of the samples.
+
+ There are multiple techniques for correcting the misalignments. We will see
+ a technique named "Parametric Time Warping". Time warping techniques in general
+ correct the misalignments by shifting, stretching, expanding and in general
+ distroting the retention time axis, in a way that maximizes or minimizes an
+ optimization criteria (such as the correlation between samples or the euclidean
+ distance of the samples). In particular "Parametric Time Warping" (PTW) uses
+ a polynomial distortion of the retention times and by default uses a weighted
+ correlation between samples.
+
+ The zeroth order coefficient of the warping function will correspond to the
+ peak shift, the first order coefficient will correspond to a global
+ compression/expansion of the retention time, and higher coefficients will
+ correspond to non-linear compressions/expansions.
+
+ To illustrate this procedure we will use sample number 2 as reference and warp the third
+ sample so that the peaks show maximal overlap.
+
+ The alignment will distort the retention time axis, to leave margin for the
+ distortion we need to add zeros at the beginning of the retention times
+ and at the end.
+
+```{r}
+num_mz <- nrow(lcms)
+num_ret_time <- ncol(lcms)
+num_samples <- dim(lcms)[3]
+
+# We will add 250 before and after the retention time
+timepad <- c(rep(NA, 250), time, rep(NA, 250)) # the retention time axis
+
+# The intensities:
+lcms_with_zero_pad <- array(0, dim = c(num_mz, 500 + num_ret_time, num_samples))
+lcms_with_zero_pad[,251:(ncol(lcms_with_zero_pad) - 250),] <- lcms
+
+
+intensity_s2_pad <- lcms_with_zero_pad[,,2]
+intensity_s3_pad <- lcms_with_zero_pad[,,3]
+
+
+# define a global 2nd degree warping
+global_warp <- ptw(ref = intensity_s2_pad, samp = intensity_s3_pad,
+                   warp.type = "global", init.coef = c(0, 1, 0),
+                   mode = "backward")
+summary(global_warp)
+
+# Get the warped sample and set to zero missing values at the edges
+intensity_s3_global_warp <- global_warp$warped.sample
+intensity_s3_global_warp[is.na(intensity_s3_global_warp)] <- 0
+
+
+# Refine alignment by adding 5th degree warpings for individual chromatograms
+indiv_warp <- ptw(ref = intensity_s2_pad,
+                  samp = intensity_s3_global_warp,
+                  warp.type = "individual",
+                  init.coef = c(0,1,0,0,0,0),
+                  mode = "backward")
+
+# Get the warped sample and set to zero missing values at the edges
+intensity_s3_indiv_warp <- indiv_warp$warped.sample
+intensity_s3_indiv_warp[is.na(intensity_s3_indiv_warp)] <- 0
+
+# compare TICs
+tic_ref <- colSums(intensity_s2_pad)
+tic_samp <- colSums(intensity_s3_pad)
+tic_samp_indiv_warp <- colSums(intensity_s3_indiv_warp)
+
+plot(x = timepad/60, y = tic_ref, type = "l",
+     xlab = "Ret. time (min)",
+     ylab = "Intensity (a.u)",
+     xlim = c(60, 70),
+     col = "black", lty = "solid",
+     main = "TIC: original data")
+lines(x = timepad/60, y = tic_samp, col = "gray", lty = "dashed")
+lines(x = timepad/60, y = tic_samp_indiv_warp, col = "blue", lty = "solid")
+legend("topleft",
+       legend = c("Sample 2 (ref)", "Sample 3 (orig)",
+                  "Sample 3 (aligned)"),
+       lty = c("solid", "dashed", "solid"),
+       col = c("black", "gray", "blue"))
+```

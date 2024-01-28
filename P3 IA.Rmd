@@ -1,0 +1,376 @@
+---
+title: "P3 IA"
+output: html_document
+date: '2022-03-21'
+---
+
+Primer de tot descarreguem els paquets necessaris per a la realització de la pràctica:
+
+```{r}
+install.packages(c("ChemometricsWithR", "MASS"))
+install.packages(c("e1071", "sfsmisc", "class", "caret"))
+library("ChemometricsWithR")
+library("MASS")
+library("sfsmisc")
+library("e1071")
+library("class")
+library("caret")
+set.seed(43)
+```
+
+Loading the data:
+
+```{r}
+data("Prostate2000Raw", package="ChemometricsWithR") #anem utilitzar aquestes dades
+mz_prost <- Prostate2000Raw$mz #creem tres variables, una amb cada informació 
+#mz és relació carrega / massa
+intensity_with_replicates <- Prostate2000Raw$intensity # intensitat de l'espectre
+spectra_condition <- Prostate2000Raw$type #tipus de pacient que tenim
+number_of_subjects <- ncol(intensity_with_replicates)/2 #el numero de pacients és el numero de columnes entre dos perquè tenim dues repliques de cadascun
+subject_ids <- paste0("S", rep(1:number_of_subjects, each = 2)) 
+# com que tenim dues rèpliques diferents de cada pacient, voldrem que canviï cada dos, no a cada número de manera que ens quedi: 1 1 2 2 3 3 4 4 ... 327 327
+replicate_ids <- rep(c("A", "B"), times = number_of_subjects) 
+#similar al pas anterior, volem classificar cada rèplica d'un mateix pacient de manera que ens quedi: A B A B A B ... A B
+new_names <- paste0(subject_ids,
+                    "_",
+                spectra_condition, # control control ... bph, bph,pca, pca
+                   "_",
+                replicate_ids) #ara agafem cadascun dels subjectes i els classifiquem segons la seva condició (control, càncer o inflació prostàtica)
+colnames(intensity_with_replicates) <- new_names #ara posem els noms que hem creat a cada columna
+rownames(intensity_with_replicates) <- as.character(round(mz_prost, digits = 1)) #per la varibale de massa / càrrega la convertim a una string per que no es llegeixi com a un número i ho arrodoneix a un digit
+```
+
+Preprocessing.
+
+Replicate averaging: 
+
+As each subject is measured twice, we will average consecutive spectra (belonging to the same subject):
+
+```{r}
+num_subjects <- ncol(intensity_with_replicates)/2 #el número total de subjectes serà el número total de columnes entre dos perquè tenim dues rèpliques de cadascun
+intensity_avg <- matrix(0, nrow = nrow(intensity_with_replicates), ncol = num_subjects) #creem una matriu buida amb tantes files com rèpliques i tantes columnes com subjectes
+for (i in seq(1, num_subjects)) {
+intensity_avg[, i] <- rowMeans(intensity_with_replicates[, c(2*i - 1, 2*i)])
+} #aquí estem la mitja dels valors de cada una de les files
+```
+
+spectra_condition has 654 values, one for each spectra. We take one every two types to have 327 values, one for each subject in our intensity_avg matrix:
+
+```{r}
+subject_condition <- spectra_condition[seq(from = 1, to = 654, by = 2)]
+```
+
+Log transformation:
+
+Log transformation transforms the intensities to their log values. The measured intensities span a wide dynamic range of values. The same peak in some spectrum can be much larger than in other spectra. The distribution of intensities in the spectra is non-gaussian, and by using a log transform we can make it more similar to a gaussian distribution.
+Having gaussian-like data is beneficial for PCA and LDA, as PCA is based on the covariance matrix and LDA assumes that our data is shaped in multivariate gaussians as well.
+Therefore, if we create our models using the logarithm of the intensities instead of the intensities, we will be able to capture better the information of our largest peaks in the mass spectra, as their histogram will ressemble more a gaussian.
+First we transform the intensity values to a log scale. To do that, we create a copy of our data and then transform it:
+
+```{r}
+intensity_log <- intensity_avg #creem una copia per no alterar l'original
+```
+
+Values close to zero would go to -infinity. We want to avoid that. A simple solution is to use a threshold:
+
+```{r}
+intensity_log[intensity_log < 1E-5] <- 1E-5 
+intensity_log <- log(intensity_log) #els elements que comopleixin la condició de ser més petits de 10^-5 els reajustarem a escala logarítmica per tal que no generin problemes
+```
+
+If you look at a given m/z variable and check the intensity values you can see that our variables were not normally distributed: There are few values with large intensities, the distribution is not symmetric:
+
+```{r}
+hist(intensity_avg[2000,], breaks = 200, xlab = "Intensity (a.u.)", 
+     main = sprintf("Histogram of 327 raw intensities with m/z = %f Da",
+mz_prost[2000])) #estem mirant el conjunt d'intensitats dels diferents pacients al punt 2000
+```
+
+Podem veure com la distribució de l'histograma no és gaussiana de manera que l'ajustem logarítmicament i ara ens surt el següent:
+
+```{r}
+hist(intensity_log[2000,], breaks = 200, xlab = "log-Intensity (a.u.)", main = sprintf("Histogram of 327 log intensities with m/z = %f Da",
+mz_prost[2000]))
+```
+Ara veiem que la distribució és molt més gaussiana; simètrica etc.
+
+The classification algorithms assume that each sample is given in a row, therefore we need to transpose the intensity matrix:
+
+```{r}
+intensity <- t(intensity_log) #creem una nova variable que sigui igual a la trasposada
+```
+Let’s just check the dimensionality to confirm:
+```{r}
+message("Number of samples: ", nrow(intensity)) ## Number of samples: 327 (pacient que tenim)
+message("Number of variables: ", ncol(intensity)) ## Number of variables: 10523 (número de punts del cromatograma)
+```
+
+The balance of sample types in the dataset is important to many algorithms: If we had very few samples of a particular class (for instance very few benign prostatic hyperplasia subjects), we would have to consider either (i) looking for more samples of that class, (ii) drop all the hyperplasia samples and simplify the experiment or (iii) use algorithms able to work with unbalanced datasets.
+
+```{r}
+table(subject_condition) #tindrà la següent forma
+## subject_condition
+##     bph control     pca
+##      78      81     168
+```
+Q1. Is the dataset balanced? What is the percentage of samples of each class?
+
+No està balanced perquè el nombre de subjectes per a cada condició no és igual, sinó que els percentatges són els següents:
+
+- bph: 23'86%
+- pca: 51'38%
+- control: 24'7%
+
+Per tal que fos balanced, hauriem de tenir un 33'33% per a cadascun de les classes.
+
+---
+
+As you may see the dimensionality of the raw data is pretty high. The usual procedure to reduce this type of data consist of finding common peaks and integrating their area (aside from smoothing, binning, peak alignment, normalization and other signal processing steps to enhance signal quality).
+However, here to simplify we will follow a brute force strategy (not optimal but easy): We will consider every single point in the spectra as a distinctive feature. This brute force strategy is sometimes used in bioinformatics, but generally does not provide the best results.
+
+---
+
+Train / Test division
+
+In order to estimate how our trained model will perform, we need to split the dataset into a training subset and a test subset. The train subset will be used to train the model and the test subset will be used to estimate the performance of the model.
+Some classifiers perform better with balanced datasets. We will balance the dataset so it has the same number of samples for each class in the train subset.
+The number of samples used in the train subset for each class corresponds to 70% of the number of samples of the least populated class.
+
+```{r}
+num_samples_per_class_in_train <- round(0.7*min(table(subject_condition))) #aquí estem agafant el 70% de la taula amb la classe que té menys, és a dir, de bph
+pca_idx <- which(subject_condition == "pca") #ens dona els índexs dels subjectes que té pca
+pca_idx_train <- sample(pca_idx, num_samples_per_class_in_train) #nova variable que emmagatzema de forma aleatòria uns 56 pacients que és un 70% de 78% dels pacients que tenien pca
+#és a dir, 56 pacients van al train i la resta aniran al test
+pca_idx_test <- setdiff(pca_idx, pca_idx_train) #fa la diferència entre els subjectes del train i el total dels que tenen pca, és a dir, els "compara" i agafa els que no s'han utilitzat per fer el train
+#ara veiem com fa exactament el mateix però per a la resta condicions
+bph_idx <- which(subject_condition == "bph")
+bph_idx_train <- sample(bph_idx, num_samples_per_class_in_train) 
+bph_idx_test <- setdiff(bph_idx, bph_idx_train)
+ctrl_idx <- which(subject_condition == "control")
+ctrl_idx_train <- sample(ctrl_idx, num_samples_per_class_in_train) 
+ctrl_idx_test <- setdiff(ctrl_idx, ctrl_idx_train)
+train_idx <- c(pca_idx_train, bph_idx_train, ctrl_idx_train) 
+test_idx <- c(pca_idx_test, bph_idx_test, ctrl_idx_test)
+# use the indexes to split the matrix into train and test
+# fem dues matrius diferents, una de train i una de test
+# separem també els valors de les intensitats en train i test
+intensity_trn <- intensity[train_idx,] 
+intensity_tst <- intensity[test_idx,]
+# use the indexes to split the labels
+# fem el mateix però assignant les condicions de cada subjecte
+subject_condition_trn <- subject_condition[train_idx] 
+subject_condition_tst <- subject_condition[test_idx]
+message("Number of samples in training: ", nrow(intensity_trn))
+## Number of samples in training: 165
+message("Number of samples in test: ", nrow(intensity_tst)) 
+## Number of samples in test: 162
+```
+
+Feature Extraction by Principal Component Analysis
+
+---
+
+In most occasions, classifiers are not built in the raw data due to theexistence of a large number of dimensions without discriminant information.
+In this section we will explore Dimensionality Reduction by Principal Component Analysis (PCA). PCA is an unsupervised technique that returns directions (eigenvectors) that explain the maximum data variance while being orthogonal among them. While PCA is optimal in compressing the data into a lower dimensionality, we have to be aware that maximum variance does not imply maximum discriminability. In other words, PCA may not be the optimal procedure to reduce the dimensionality. It is however, the default technique for initial data exploration and pattern recognition design.
+
+𝐷=𝑆∗𝐿 +𝐸
+
+PCA will find a new basis for our data in which each of the directions maximize the explained variance of our data. The change of basis matrix 𝐿 is called the PCA loadings, while the projection of our data in this new basis are the scores.
+
+If we truncate the PCA decomposition to a number of principal components npc, then the product 
+𝑆∗𝐿𝑇 will not be exactly as 𝐷, and the difference will be the matrix of residuals 𝐸.
+We will use the PCA function from the ChemometricsWithR package. PCA needs to be applied to a matrix where each feature has zero mean.
+
+---
+
+A continuació creem una matriu de zeros i l'anem omplint amb les variances corresponents a cada subjecte:
+
+```{r}
+mean_spectrum_trn <- colMeans(intensity_trn)
+intensity_trn_preproc <- matrix(0, nrow = nrow(intensity_trn), ncol = ncol(intensity_trn))
+for (i in 1:ncol(intensity_trn_preproc)) {
+intensity_trn_preproc[, i] <- intensity_trn[, i] - mean_spectrum_trn[i] }
+```
+
+The test data is centered using the mean and standard deviation computed from the train data:
+
+Ara estem fent el mateix però agafant les dades dels subjectes que hem assignat com a test:
+
+```{r}
+intensity_tst_preproc <- matrix(0, nrow = nrow(intensity_tst), ncol = ncol(intensity_tst))
+for (i in 1:ncol(intensity_tst_preproc)) {
+intensity_tst_preproc[, i] <- intensity_tst[, i] - mean_spectrum_trn[i] }
+```
+
+We can now perform the dimensionality reduction and observe how the variance is distributed among the first principal components:
+
+Un cop tenim les dades ordenades podem procedir a fer el PCA amb la funció ia continuació representar aquests resultats més visualment a través d'un gràfic on posarem mostrarem les variances calculades en funció del número de components que combinem:
+
+```{r}
+pca_model <- PCA(intensity_trn_preproc) 
+summary(pca_model)
+pca_model_var <- variances(pca_model)
+pca_model_var_percent <- 100*cumsum(pca_model_var)/sum(pca_model_var)
+plot(x = 1:length(pca_model_var_percent),
+y = pca_model_var_percent,
+type = "l",
+xlab = "Number of principal components", ylab = "Cummulated variance (%)",
+main = "% variance captured vs #PC used")
+```
+Based on the knee of the plot, we choose the number of components of the PCA space. This is a very rough way to choose the number of components of the PCA space. Usually this is done with a cross-validation, as you will see at last section of the session.
+
+A partir del gràfic podem veure que el valor que correspon a un 70% de variança és al voltant dels 50 components (eix de les x), de manera que creem una nova variable que correspongui a aquest número:
+
+```{r}
+pca_model_ncomp <- 50
+```
+
+We can retrieve the scores of the PCA model:
+The scores of the training subset of the model can be obtained using the function scores.
+
+Creem una variable que emmagatzemi els resultats del PCA que hem fet abans pels models assignats al training:
+
+```{r}
+intensity_scores_trn <- pca_model$scores[,1:pca_model_ncomp]
+```
+
+If we want to obtain the scores for our test subset we need to project our samples into the PCA space represented in our model:
+
+Ara fem el mateix però pels subjectes assignats al test:
+
+```{r}
+intensity_scores_test <- project(pca_model, npc = pca_model_ncomp, intensity_tst_preproc)
+```
+
+Each row in the scores matrices contains the projection of a single sample. Each column in the scores matrices represents a principal component. Each value corresponds to the projection of the sample given by its row on the principal component given by its column.
+To visualize the scores we can plot some principal components in pairs:
+
+Ara volem veure gràficament aquest conjunt de resultats i el que farem és asisgnar a cada paràmetres un color diferent i visualitzar-los per a conjunts diferents de dimensions comparant el resultats del train i el del test:
+
+```{r}
+colours_legend <- c(bph = "blue", control = "darkgreen", pca = "red") 
+point_shapes_legend <- c(train = 1, test = 4) # 1 means circle, 4 means cross (see ?par)
+
+intensity_scores_all <- rbind(intensity_scores_trn, intensity_scores_test)
+
+point_shapes <- point_shapes_legend[c(rep("train", nrow(intensity_scores_trn)),
+rep("test",nrow(intensity_scores_test)))]
+
+colours <- colours_legend[c(subject_condition_trn, subject_condition_tst)]
+
+pairs(intensity_scores_all[,1:5], labels = paste("PC", 1:5), pch = point_shapes, col = colours)
+```
+
+Q2. Is any of these first 5 principal components able to discriminate sample types?
+
+A partir del gràfic podem veure que les dimensions que millor discriminen els diferents grups serien PC3 i PC4 ja que podem entreveure millor els diferents grups.
+
+We can plot any of those subplots as well:
+
+Veiem que podeu veure cadacsun dels gràfics individualment de manera que els podrem interpretar més fàcilment:
+
+```{r}
+plot(x = intensity_scores_all[,1],
+     y = intensity_scores_all[,2],
+     pch = point_shapes,
+     col = colours,
+main = "PCA Score plot", xlab = "PC 1",
+ylab = "PC 2")
+legend("topright",
+legend = names(colours_legend), pch = 19,
+title = "Condition",
+col = colours_legend)
+legend("topleft",
+legend = names(point_shapes_legend), pch = point_shapes_legend,
+title = "Subset",
+col = "black")
+```
+
+Q3. Do you see if the classes differ a lot from being normally distributed?
+
+Si mirem els gràfics podem veure que realment no hi ha cap combinació de dimensions que ens permeti discrimar realment les diferents classes. Basant-nos en això podríem dir que no es possible aplicar un "Linear Discriminant Analysis" que ens serveixi com a model per identificar les diferents categories.
+
+Nearest Neighbours Classifier on the PCA space:
+
+A nearest neighbour classifier is a non-parametric method used for pattern recognition and classification. The method classifies new samples based on the classes of the k closest training samples.
+The k-NN classifier is implemented in the class package.
+The kNN will predict the classes of the test set, given the training samples, their
+classes and the number of neighbours to look.
+We will apply the k-NN classifier on the PCA space.
+
+```{r}
+library("class")
+library("pls")
+```
+Q4. We can calculate the confusion matrix. Take some time to understand this table. What groups of samples is the kNN misclassifying?
+
+```{r}
+subject_condition_tst_pca_knn_pred <- class::knn(train = intensity_scores_trn, test = intensity_scores_test, cl = subject_condition_trn, k= 5)
+
+confmat_pca_knn <- table(subject_condition_tst, subject_condition_tst_pca_knn_pred) 
+print(confmat_pca_knn)
+
+CR_pca_knn <- sum(diag(confmat_pca_knn))/sum(confmat_pca_knn) 
+message("The classification rate for PCA-kNN is: ", 100*round(CR_pca_knn, 2), "%")
+```
+
+Amb aquet tros de codi hem creat una taula per veure més clarament la comparació entre els resultats del nostre algoritme i les categories de veritat, és a dir, si comparem files i columnes podem veure els subjectes que hem "missclassified". En aquest cas, podem veure que el grup amb més error seria els de la categoria pca ja que podem veure que hi ha 51 que el programa preveu que seran bph però que realment son pca.
+
+Linear Discriminant Analysis Classifiers:
+
+Linear Discriminant Analysis Classifiers assume classes are normally distributed. Here we will apply them and we will check the classification performance. They cannot be implemented in the original space due to insufficient number of samples leading to singular covariance matrices, however we can apply Linear Discriminant Analysis on the PCA scores.
+LDA assumes the groups (or classes) behave like multivariate gaussians. It will find the change of basis that maximizes the between-class distance while minimizing the within-class distance. In other words, it tries to find the change of basis that separates our clusters while making our clusters as compact as possible.
+
+In this section we will build a linear classifier using the principal components of the data by implementing the next steps:
+
+```{r}
+library(MASS)
+
+#Train a LDA model using the training scores obtained from the previous PCA, you can use function lda from the MASS package.
+#Use the function predict to make the prediction of the test samples.
+model = lda(intensity_scores_trn, grouping = subject_condition_trn)
+model
+
+prediction = predict(model, intensity_scores_test)
+prediction
+
+#From the predicted object extract: a) the projection of the samples in the LDA space and b) the predicted class
+
+prediction_class = prediction$class
+prediction_class
+
+#Compute the confusion Matrix and estimate the classification Rate
+
+matriu_confusio = table(subject_condition_tst, prediction_class)
+matriu_confusio
+
+rate = sum(diag(matriu_confusio))/sum(matriu_confusio) 
+rate*100
+
+# Make a plot of the data using two dimensions. To visualize both the training and test data we will compute the projections for the training data as well.
+
+total_lda = lda(intensity_scores_all, grouping(subject_condition))
+total_lda
+
+valors_lda = predict(total_lda)
+plot(valors_lda$x[,1], valors_lda$x[,2])
+text(valors_lda$x[,1], valors_lda$x[,2], subject_condition, cex = 0.7, pos = 4, col = 'blue')
+plot(x = valors_lda$x[,1], y = valors_lda$x[,2], pch = point_shapes, col = colours, main = 'Resultats LDA', xlab = 'LDA1', ylab = 'LDA2')
+legend('topright', legend = names(colours_legend), pch = 17, title = 'Condició', col = colours_legend)
+
+```
+
+Questions:
+
+Q5. What would have happened if the researchers had not considered including benign prostatic hypertrophy subjects in the experimental design?
+
+El que segurament hagués passat és que pacients amb càncer, probablement en fases inicials de la malaltia, es classificarien com a pacients amb hipertròfia, ja que el model no tindria suficient precisió com per clasificar-lo com a malalt de càncer. De la mateixa manera, pacients amb una hipertròfia benigne considerable es podrien "missclassify" com a pacients amb càncer degut a que, com hem dit, el nostre model no estaria entrenat per a aquest tipus de dades.
+
+Q6. What would our prediction be if we built a model without benign prostatic hypertrophy samples and later on we tried to predict a patient who suffered from that condition?
+
+En aquest cas, donat que el nostre model només classifica en dues categories diferents que són el càncer de control i el càncer de pròstata, subjectes amb hipertròfia prostàtica benigna tendiran a ser categoritzats al grup amb prostàtic càncer de forma errònia en el cas de tenir alguns paràmetres alterats, o bé, a pacients normals tot i tenir una hiperplàsia benigne.
+
+Veiem com en ambdos casos el resultat serà un algortime erroni per al diagnòstic d'aquests tipus de patologies, de manera que acabem amb la conclusió que és de vital importància tant incloure les samples d'hipertròfia benigne a la part experimental, com considerar-la com a categoria a l'hora de classificar els pacients.
+
+
+

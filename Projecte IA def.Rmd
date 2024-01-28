@@ -1,0 +1,425 @@
+---
+title: "PCA amb comentaris"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library("ggplot2")
+library("dplyr")
+library("tidyr")
+library("mixOmics")
+library("MASS")
+library("sfsmisc")
+library("e1071")
+library("class")
+library("caret")
+library("plotly")
+file<-readr::read_csv("parkinsonresearch_metadata_pronation-supination.csv",na = "?")
+```
+
+#DATASET EXPLORATION
+
+Es podria mirar quines de les moltissimes features realment aporten variancia (lasso regression)
+Caldria que el traintest split mantingues les proporcions de pacient-control
+
+###PCA ANALYSIS
+```{r}
+metadata<-select(file, c("RecordID","SubjectID","Group",
+                                           "Age","Gender","Side",
+                                           "DataSet","Filename"  ,  "RaterA_Video"  ,
+                                           "RaterB_Video","RaterC_Video","RaterD_Video",
+                                            "RaterE_Video","RaterF_Video","RaterA_3DAvatar",
+                                            "RaterB_3DAvatar","RaterC_3DAvatar","RaterD_3DAvatar",
+                                           "RaterE_3DAvatar","RaterF_3DAvatar","Classifier_J48" ))
+data_for_pca<-select(file, -c("RecordID","SubjectID","Group",
+                                                "Age","Gender","Side",
+                                                "DataSet","Filename"  ,  "RaterA_Video"  ,
+                                                "RaterB_Video","RaterC_Video","RaterD_Video",
+                                                "RaterE_Video","RaterF_Video","RaterA_3DAvatar",
+                                                "RaterB_3DAvatar","RaterC_3DAvatar","RaterD_3DAvatar",
+                                                "RaterE_3DAvatar","RaterF_3DAvatar","Classifier_J48" ))
+```
+
+```{r}
+num_pcs<-4
+data_for_pca<-as.matrix((data_for_pca))
+data_for_pca_scaled <-scale(data_for_pca,center = T,scale=T)
+pca_model <-mixOmics::pca(data_for_pca_scaled,ncomp = num_pcs)
+scores_pca<-as.data.frame(pca_model$variates)
+
+colnames(scores_pca) <- paste0("LV", 1:num_pcs)
+PCA_dataframe <- cbind(metadata,
+                       scores_pca)
+varpercent =100*pca_model$prop_expl_var$X
+```
+
+### GGPLOTS
+
+```{r}
+sep_age = cut(file$Age, breaks = c(0,50,60,70,100))
+ggplot(PCA_dataframe)+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(sep_age)))+
+  ggtitle('Separated by age')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+
+ggplot(PCA_dataframe)+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(Group)))+
+  ggtitle('Separated by condition')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+
+ggplot(PCA_dataframe)+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(Gender)))+
+  ggtitle('Separated by gender')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+
+ggplot(PCA_dataframe[1:17,])+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(SubjectID), shape=as.factor(Group)))+
+  ggtitle('Patients 1-5')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+
+ggplot(PCA_dataframe[18:36,])+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(SubjectID), shape=as.factor(Group)))+
+  ggtitle('Patients 6-10')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+
+ggplot(PCA_dataframe)+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(Gender), shape=as.factor(Group)))+
+  ggtitle('Patients 6-10')+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  theme(legend.title=element_blank())
+```
+
+
+###PROPORCIONS DE PACIENTS PER SEXES
+```{r}
+PCA_dataframe$Group=as.factor((PCA_dataframe$Group))
+PCA_dataframe$Gender=as.factor(PCA_dataframe$Gender)
+table(PCA_dataframe$Group, PCA_dataframe$Gender)
+```
+
+Podem veure que els dos generes estan molt desproporcionats, cosa que s'haura de tenir en compte a l'hora de fer el model. Jo crec que la opció més bona es separar entre homes i dones
+
+### EXEMPLE DE GGPLOT I subcomandos
+
+```{r}
+ggplot(PCA_dataframe)+
+  # geom_point(aes(x=PC1, y=PC2))+
+  geom_point(aes(x=LV1, y=LV2,color=as.factor(cut(Age, breaks = c(0,50,60,70,100)))))+
+  # geom_point(aes(x=PC1, y=PC2,color=as.factor(Behavior), shape=as.factor(Genotype)))+
+  # ylim(-5.1,3)+
+  # scale_color_manual(values=colors1)+
+  xlab(sprintf("PC1 (%4.2f%%)", varpercent[1])) +
+  ylab(sprintf("PC2 (%4.2f%%)", varpercent[2]))+ 
+  #ggtitle("Experiments") + theme(axis.text=element_text(size=14),
+  #                                axis.title=element_text(size=18,face="bold"),
+  #                                plot.title = element_text(color="black", size=10),
+  #                                legend.text=element_text(size=16))+
+  theme(legend.title=element_blank()) #Que no li posi titol a la llegenda
+```
+
+### GRÀFIC 3D
+
+```{r}
+fig <- plot_ly(PCA_dataframe, x = ~LV1, y = ~LV2, z = ~LV3, color = ~PCA_dataframe$Group) %>%
+  add_markers(size = 12)
+
+
+fig <- fig %>%
+  layout(
+    title = "tit",
+    scene = list(bgcolor = "#e5ecf6")
+  )
+
+fig
+```
+
+
+
+
+
+# PLSDA
+```{r}
+#Labels for the PLSDA
+file$Labels<-rep(0,nrow(file))
+file$Labels[file$Group=="PD patient"]<-1
+file$Labels[file$Group=="Control"]<-0
+
+#Create a list splitting by sexes
+filesex=split(file, file$Gender)
+
+#Lets drop some features that do not give any info:
+filesex$male=select(filesex$male, -c("RaterA_Video","RaterB_Video","RaterC_Video","RaterD_Video",
+                                  "RaterE_Video","RaterF_Video","RaterA_3DAvatar","RaterB_3DAvatar",
+                                  "RaterC_3DAvatar","RaterD_3DAvatar","RaterE_3DAvatar","RaterF_3DAvatar",
+                                  "Classifier_J48",))
+
+#Intent de preprocessing:
+a=mean(filesex$male$ratioQ13_angRate,na.rm=T)
+filesex$male$ratioQ13_angRate[is.na(filesex$male$ratioQ13_angRate)] = a
+
+a=mean(filesex$male$ratioQ13_rotAngle,na.rm=T)
+filesex$male$ratioQ13_rotAngle[is.na(filesex$male$ratioQ13_rotAngle)] = a
+
+a=mean(filesex$male$ratioQ13_rsquare_1n,na.rm=T)
+filesex$male$ratioQ13_rsquare_1n[is.na(filesex$male$ratioQ13_rsquare_1n)] = a
+
+a=mean(filesex$male$ratioQ13_rsquare_3n,na.rm=T)
+filesex$male$ratioQ13_rsquare_3n[is.na(filesex$male$ratioQ13_rsquare_3n)] = a
+
+#Aixo em diu quins pacients son homes, sense repeticions
+#i a continuacio ho guarda en un fitxer a part (no sabia ferho de altra forma)
+male_subj_id= (c())
+for (a in filesex$male$SubjectID){
+  if (! (a %in% male_subj_id)){
+    male_subj_id=append(male_subj_id,a)
+  }
+}
+
+#write.csv(male_subj_id,file='csv male-label.csv')
+
+#Obro el fitxer amb les labels de cada home de forma individual
+male_id_labels=read.csv('csv male-label.csv',header = T)
+
+#divisio en sick i control per poder mantenir-ne les proporcions al fer la divisio train-test
+male_sick=subset(male_id_labels,Labels==1)
+male_control=setdiff(male_id_labels,male_sick)
+
+#Division into a blind set and param optimization set
+prop=0.8
+op1=sample_n(male_sick, round(nrow(male_sick)*prop))
+blind1=setdiff(male_sick, op1)
+op2=sample_n(male_control,round(nrow(male_control)*prop))
+blind2=setdiff(male_control, op2)
+    
+male_opt=rbind(op1,op2)
+male_blind=rbind(blind1,blind2)
+
+filesex$male$opt_blind=rep(0,nrow(filesex$male))
+index=1
+for (a in filesex$male$SubjectID){
+  if (a %in% male_opt$male_ID){
+    filesex$male$opt_blind[index]=1
+  }
+  index=index+1
+}
+
+
+
+prop=0.7
+# Analysis of hyperparameter num_pc:
+for(pc in 1:20){
+  accuracies_noninverted=c()
+  accuracies_inverted=c()
+  #Intent de Cross-validation (cv=10)
+  for (i in 1:10){
+    #selecciona el 70% de homes tenint en conte que les mesures de un mateix
+    #pacient vagin al mateix sac i que es mantinguin prop de malalt-sano
+    tr1=sample_n(op1, round(nrow(op1)*prop))
+    tst1=setdiff(op1, tr1)
+    tr2=sample_n(op2,round(nrow(op2)*prop))
+    tst2=setdiff(op2, tr2)
+    
+    male_train=rbind(tr1,tr2)
+    male_test=rbind(tst1,tst2)
+    
+    #Creo una columna que especifica la divisio train-test
+    filesex$male$traintest=rep(0,nrow(filesex$male))
+    index=1
+    for (a in filesex$male$SubjectID){
+      if (a %in% male_train$male_ID){
+        filesex$male$traintest[index]=1
+      }
+      index=index+1
+    }
+    
+    #Arribats aqui ja està passat la horrible tasca de fer el traintest.
+    #Lo que ve darrere es mesomenys lo que va enviar la profe adaptat.
+    
+    #Creo dos datasets per fer el PLSDA amb el traintest split fet
+    plsda_male_train=select(filesex$male[filesex$male$traintest==1,], -c("RecordID","SubjectID","Group",
+                                                    "Age","Gender","Side",
+                                                    "DataSet","Filename"  , 
+                                                    'traintest','angRate_Outliers66tps',
+                                                    'angRate_Outliers50tps',
+                                                    'rotAngle_Outliers66tps','rotAngle_Outliers50tps',
+                                                    'frequency_Ausr66tps','frequency_Ausr50tps',
+                                                    'opt_blind','frequency_Ausr50p'))
+    
+    plsda_male_test=select(filesex$male[filesex$male$traintest==0,], -c("RecordID","SubjectID","Group",
+                                                    "Age","Gender","Side",
+                                                    "DataSet","Filename",
+                                                    'traintest','angRate_Outliers66tps',
+                                                    'angRate_Outliers50tps',
+                                                    'rotAngle_Outliers66tps','rotAngle_Outliers50tps',
+                                                    'frequency_Ausr66tps','frequency_Ausr50tps',
+                                                    'opt_blind','frequency_Ausr50p'))
+    
+    
+    #OJO! Cal dividir correctament que tots els subjectes quedin dins el mateix paquet (FET)
+    #Selection of LV
+    num_pcs<-pc
+    # Training a model
+    Labels_Train<-plsda_male_train$Labels
+    Labels_Test<-plsda_male_test$Labels
+    Train_data<-as.matrix((select(plsda_male_train,-c('Labels'))))
+    plsda_model <-mixOmics::plsda(Train_data,Labels_Train,ncomp = num_pcs)
+    scores_plsda<-as.data.frame(plsda_model$variates$X)
+    #Predict Test
+    Test_data<-as.matrix(select(plsda_male_test,-c('Labels')))
+    Test_predicted<-predict(plsda_model,Test_data)
+    Predicted_Labels<-unlist(Test_predicted$predict[,1,num_pcs])
+    #Predicted_Labels
+    #Labels_Test
+    #You can set the sensitivity of the model, com si fos un log-reg
+    inverted_pred_labels= Predicted_Labels
+    inverted_pred_labels[Predicted_Labels<=0.5]<-1
+    inverted_pred_labels[Predicted_Labels>=0.5]<-0
+    
+    mat2=confusionMatrix(as.factor(inverted_pred_labels),as.factor(Labels_Test))
+    accuracies_inverted=append(accuracies_inverted,mat2$overall['Accuracy'])
+  }
+  
+  print('num pc: ')
+  print(pc)
+  print(accuracies_inverted)
+  print(mean(accuracies_inverted))
+}
+
+```
+
+Lets now do the final test with the blind set at 15 pc:
+
+```{r}
+plsda_male_train=select(filesex$male[filesex$male$opt_blind==1,], -c("RecordID","SubjectID","Group",
+                                                    "Age","Gender","Side",
+                                                    "DataSet","Filename"  ,
+                                                    'traintest','angRate_Outliers66tps',
+                                                    'angRate_Outliers50tps',
+                                                    'rotAngle_Outliers66tps','rotAngle_Outliers50tps',
+                                                    'frequency_Ausr66tps','frequency_Ausr50tps',
+                                                    'opt_blind','frequency_Ausr50p'))
+    
+plsda_male_test=select(filesex$male[filesex$male$opt_blind==0,], -c("RecordID","SubjectID","Group",
+                                                    "Age","Gender","Side",
+                                                    "DataSet","Filename",
+                                                    'traintest','angRate_Outliers66tps',
+                                                    'angRate_Outliers50tps',
+                                                    'rotAngle_Outliers66tps','rotAngle_Outliers50tps',
+                                                    'frequency_Ausr66tps','frequency_Ausr50tps',
+                                                    'opt_blind','frequency_Ausr50p'))
+
+#Selection of LV
+num_pcs<-15
+# Training a model
+Labels_Train<-plsda_male_train$Labels
+Labels_Test<-plsda_male_test$Labels
+Train_data<-as.matrix((select(plsda_male_train,-c('Labels'))))
+plsda_model <-mixOmics::plsda(Train_data,Labels_Train,ncomp = num_pcs)
+scores_plsda<-as.data.frame(plsda_model$variates$X)
+#Predict Test
+Test_data<-as.matrix(select(plsda_male_test,-c('Labels')))
+Test_predicted<-predict(plsda_model,Test_data)
+Predicted_Labels<-unlist(Test_predicted$predict[,1,num_pcs])
+#You can set the sensitivity of the model, com si fos un log-reg
+
+inverted_pred_labels= Predicted_Labels
+inverted_pred_labels[Predicted_Labels<=0.5]<-1
+inverted_pred_labels[Predicted_Labels>=0.5]<-0
+
+mat2=confusionMatrix(as.factor(inverted_pred_labels),as.factor(Labels_Test))
+
+print('num pc: ')
+print(num_pcs)
+print(mat2$overall['Accuracy'])
+  
+importance=vip(plsda_model)
+maxvals=rep(0,nrow(importance))
+for (i in 1:nrow(importance)){
+  maxvals[i]=max(importance[i,])
+}
+
+importance=cbind(importance, maxvals)
+importance_order=importance[order(importance[,'maxvals'],decreasing=T),]
+importance_order[1:12,'maxvals']
+
+```
+
+
+## INTENT DE LOGISTIC REGRESSION
+pot millorar-se afegint un CV com lo de dalt, optimitzant quin es el millor punt de tall amb un GridSearch o algo per l'estil
+```{r}
+logres_ds=cbind(Labels_Train,scores_plsda)
+logres=glm(Labels_Train~comp1+comp2+comp3+comp4, data=logres_ds)
+summary(logres)
+#Treiem els predicted scores
+pred_scores=as.data.frame(Test_predicted$variates)
+colnames(pred_scores)=c('comp1','comp2','comp3','comp4')
+pred_labels_logreg=predict(logres,pred_scores)
+pred_labels_logreg
+
+binary_pred_logreg=pred_labels_logreg
+binary_pred_logreg[pred_labels_logreg<=0.6]=0
+binary_pred_logreg[pred_labels_logreg>=0.6]=1
+
+mat3=confusionMatrix(as.factor(binary_pred_logreg),as.factor(Labels_Test))
+accuracies_logreg=mat3$overall['Accuracy']
+accuracies_logreg
+```
+
+```{r}
+print('hola')
+```
+
+
+
+### Intent de LDA ANALYSIS (Beni) (ni cas a aixo)
+
+```{r}
+patient_condition = as.factor(file$Group)
+
+library(MASS)
+lda_model=lda(scores_pca, grouping = patient_condition)
+
+lda_predict = predict(lda_model, scores_pca)
+lda_pred_proj = lda_predict$x
+lda_pred_class = lda_predict$class
+
+colours_legend = c(Control = "blue", PDpatient = "darkgreen")
+colours_legend
+
+
+# We have the vector subject_condition from earlier
+colours= colours_legend[c(scores_pca)]
+
+hist(x = lda_pred_proj[,1],
+     col = colours,
+     main = "LDA 2D plot",
+     xlab = "LC 1",)
+legend("topright",
+       legend = names(colours_legend),
+       pch = 19,
+       title = "Condition",
+       col = colours_legend)
+
+
+g=c(1,2,3)
+! 1 %in% g
+```
+
+
